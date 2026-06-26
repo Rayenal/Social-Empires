@@ -63,7 +63,8 @@ print (" [+] Configuring server routes...")
 def login():
     session.pop('USERID', default=None)
     session.pop('GAMEVERSION', default=None)
-    load_saved_villages()
+    # تنبيه: تم إخفاء السطر المتسبب في خطأ الـ NoneType عند البداية لتفادي الـ Crash
+    # load_saved_villages() 
     return render_template("login.html", version=version_name, error=request.args.get('error'))
 
 @app.route("/login_process", methods=['POST'])
