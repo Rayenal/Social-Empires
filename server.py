@@ -1,9 +1,9 @@
 import os
 import json
 import urllib.request
-import urllib.error  # <-- هذا هو السطر الناقص السحري!
+import urllib.error
 from urllib.parse import urlparse
-import pg8000.dbapi
+import requests
 from flask import Flask, render_template, send_from_directory, request, redirect, session
 from flask_cors import CORS
 
@@ -22,124 +22,98 @@ print(" [+] Loading players...")
 from get_player_info import get_player_info, get_neighbor_info
 from sessions import load_saved_villages, all_saves_userid, all_saves_info, save_info, new_village, fb_friends_str
 
-# --- إعداد الاتصال بقاعدة بيانات SUPABASE باستعمال pg8000 ---
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# --- إعداد الاتصال بـ SUPABASE عبر REST API المباشر ---
+# مثال للروابط: 
+# SUPABASE_URL = "https://wumrgbujacdwolwuaxuu.supabase.co"
+# SUPABASE_KEY = "eyJhbGciOi..." (تلقاه في إعدادات API في Supabase باسم anon key أو service_role)
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-def get_db_connection():
-    if DATABASE_URL:
-        try:
-            # تفكيك الرابط السحابي لتوافقه مع pg8000
-            url = urlparse(DATABASE_URL)
-            conn = pg8000.dbapi.connect(
-                user=url.username,
-                password=url.password,
-                host=url.hostname,
-                port=url.port if url.port else 5432,
-                database=url.path[1:] # حذف الفاصلة / الأولى
-            )
-            return conn
-        except Exception as e:
-            print(f" [!] Database connection error: {e}")
+def supabase_api_get(key_name):
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/game_data?key=eq.{key_name}&select=value"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        }
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200 and res.json():
+            return json.loads(res.json()[0]['value'])
+    except Exception as e:
+        print(f" [!] Supabase API Get Error: {e}")
     return None
 
-def init_db():
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute('''
-                    CREATE TABLE IF NOT EXISTS game_data (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    );
-                ''')
-                conn.commit()
-            print(" [+] Supabase DB Connected and Checked successfully!")
-        except Exception as e:
-            print(f" [!] Error initializing DB: {e}")
-        finally:
-            conn.close()
-    else:
-        print(" [!] WARNING: Working in LOCAL mode (No DATABASE_URL provided or connection failed).")
-
-# تشغيل الفحص عند البداية
-init_db()
-
-# دالات تعويض الملفات المحلية بـ Supabase
-def supabase_get(key_name, default_factory):
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT value FROM game_data WHERE key = %s;", (key_name,))
-                row = cur.fetchone()
-                if row:
-                    return json.loads(row[0])
-        except Exception as e:
-            print(f" [!] Error fetching {key_name} from Supabase: {e}")
-        finally:
-            conn.close()
-    
-    # Backup محلي إذا فشل الاتصال أو كنا في طور الـ Local
-    local_path = f"saves/{key_name if not key_name.endswith('.json') else key_name}"
-    if os.path.exists(local_path):
-        try:
-            with open(local_path, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return default_factory()
-
-def supabase_set(key_name, data):
+def supabase_api_set(key_name, data):
     # حفظ احتياطي محلي أولاً
     os.makedirs('saves', exist_ok=True)
     local_path = f"saves/{key_name if not key_name.endswith('.json') else key_name}"
     with open(local_path, 'w') as f:
         json.dump(data, f, indent=4)
         
-    # حفظ سحابي في Supabase
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                json_str = json.dumps(data)
-                cur.execute('''
-                    INSERT INTO game_data (key, value)
-                    VALUES (%s, %s)
-                    ON CONFLICT (key)
-                    DO UPDATE SET value = EXCLUDED.value;
-                ''', (key_name, json_str))
-                conn.commit()
-        except Exception as e:
-            print(f" [!] Error saving {key_name} to Supabase: {e}")
-        finally:
-            conn.close()
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+        
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/game_data"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates"
+        }
+        payload = {
+            "key": key_name,
+            "value": json.dumps(data)
+        }
+        # استعمال POST مع upsert أو مرونة الجدول
+        res = requests.post(url, headers=headers, json=payload, timeout=5)
+        if res.status_code not in [200, 201]:
+            # محاولة تحديث إذا كان السجل موجوداً والـ Prefer لم تشتغل
+            url_update = f"{SUPABASE_URL}/rest/v1/game_data?key=eq.{key_name}"
+            requests.patch(url_update, headers=headers, json={"value": json.dumps(data)}, timeout=5)
+    except Exception as e:
+        print(f" [!] Supabase API Set Error: {e}")
 
-# دمج الدالات القديمة مع النظام الجديد
+# دمج الدالات القديمة مع النظام الجديد عبر API
 def load_accounts():
-    return supabase_get('accounts.json', dict)
+    res = supabase_api_get('accounts.json')
+    if res is not None:
+        return res
+    
+    local_path = "saves/accounts.json"
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
 def save_accounts(accounts):
-    supabase_set('accounts.json', accounts)
+    supabase_api_set('accounts.json', accounts)
 
-# تعديل دالة تحميل القرى الأصلية لتقرأ من السحاب
 def sync_villages_from_supabase():
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT key, value FROM game_data WHERE key LIKE '%.json' AND key != 'accounts.json';")
-                rows = cur.fetchall()
-                os.makedirs('saves', exist_ok=True)
-                for row in rows:
-                    key, value = row[0], row[1]
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/game_data?select=key,value"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        }
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            os.makedirs('saves', exist_ok=True)
+            for item in res.json():
+                key, value = item['key'], item['value']
+                if key != 'accounts.json':
                     with open(f"saves/{key}", 'w') as f:
                         f.write(value)
-            print(" [+] Synchronized all villages from Supabase to local instance.")
-        except Exception as e:
-            print(f" [!] Sync from Supabase failed: {e}")
-        finally:
-            conn.close()
+            print(" [+] Synchronized all villages from Supabase API.")
+    except Exception as e:
+        print(f" [!] Sync from Supabase API failed: {e}")
 
 # مزامنة القرى قبل تشغيل السيرفر
 sync_villages_from_supabase()
@@ -219,9 +193,7 @@ def signup_process():
             with open(user_file_path, 'r') as f:
                 data = json.load(f)
             data['name'] = empire_name
-            
-            # حفظ القرية في الـ Supabase والـ Local مع بعضهم
-            supabase_set(user_file_name, data)
+            supabase_api_set(user_file_name, data)
             
     except Exception as e:
         return redirect(f"/?error=Failed to generate village: {str(e)}")
@@ -306,9 +278,9 @@ def static_assets_loader(path):
                 response = urllib.request.urlretrieve(URL, f"{BASE_DIR}/download_assets/assets/{path}")
             except urllib.error.HTTPError:
                 return ("", 404)
-            return send_from_directory("{BASE_DIR}/download_assets/assets", path)
+            return send_from_directory(f"{BASE_DIR}/download_assets/assets", path)
         else:
-            return send_from_directory("{BASE_DIR}/download_assets/assets", path)
+            return send_from_directory(f"{BASE_DIR}/download_assets/assets", path)
     else:
         return send_from_directory(ASSETS_DIR, path)
 
@@ -350,17 +322,15 @@ def command_response():
     data_str = request.values['data']
     data = json.loads(data_str[65:])
     
-    # تنفيذ الأمر الأصلي في السيرفر (تحديث الداتا محلياً أولاً)
     command(USERID, data)
     
-    # بعد تنفيذ الأمر، نقوم بحفظ الملف المحدث مباشرة إلى Supabase
     user_file_name = f"{USERID}.json"
     user_file_path = os.path.join('saves', user_file_name)
     if os.path.exists(user_file_path):
         try:
             with open(user_file_path, 'r') as f:
                 updated_data = json.load(f)
-            supabase_set(user_file_name, updated_data)
+            supabase_api_set(user_file_name, updated_data)
         except Exception as e:
             print(f" [!] Sync save after command failed: {e}")
             
