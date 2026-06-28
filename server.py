@@ -1,11 +1,11 @@
 import os
 import json
 import urllib
+import psycopg2
 from flask import Flask, render_template, send_from_directory, request, redirect, session
 from flask_cors import CORS
-from flask.debughelpers import attach_enctype_error_multidict
 
-print (" [+] Loading basics...")
+print(" [+] Loading basics...")
 if os.name == 'nt':
     os.system("color")
     os.system("title Social Empires Server")
@@ -13,15 +13,129 @@ else:
     import sys
     sys.stdout.write("\x1b]2;Social Empires Server\x07")
 
-print (" [+] Loading game config...")
+print(" [+] Loading game config...")
 from get_game_config import get_game_config, patch_game_config
 
-print (" [+] Loading players...")
+print(" [+] Loading players...")
 from get_player_info import get_player_info, get_neighbor_info
 from sessions import load_saved_villages, all_saves_userid, all_saves_info, save_info, new_village, fb_friends_str
+
+# --- إعداد الاتصال بقاعدة بيانات SUPABASE ---
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def get_db_connection():
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            return conn
+        except Exception as e:
+            print(f" [!] Database connection error: {e}")
+    return None
+
+def init_db():
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS game_data (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                ''')
+                conn.commit()
+            print(" [+] Supabase DB Connected and Checked successfully!")
+        except Exception as e:
+            print(f" [!] Error initializing DB: {e}")
+        finally:
+            conn.close()
+    else:
+        print(" [!] WARNING: Working in LOCAL mode (No DATABASE_URL provided or connection failed).")
+
+# تشغيل الفحص عند البداية
+init_db()
+
+# دالات تعويض الملفات المحلية بـ Supabase
+def supabase_get(key_name, default_factory):
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM game_data WHERE key = %s;", (key_name,))
+                row = cur.fetchone()
+                if row:
+                    return json.loads(row[0])
+        except Exception as e:
+            print(f" [!] Error fetching {key_name} from Supabase: {e}")
+        finally:
+            conn.close()
+    
+    # Backup محلي إذا فشل الاتصال أو كنا في طور الـ Local
+    local_path = f"saves/{key_name if not key_name.endswith('.json') else key_name}"
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return default_factory()
+
+def supabase_set(key_name, data):
+    # حفظ احتياطي محلي أولاً
+    os.makedirs('saves', exist_ok=True)
+    local_path = f"saves/{key_name if not key_name.endswith('.json') else key_name}"
+    with open(local_path, 'w') as f:
+        json.dump(data, f, indent=4)
+        
+    # حفظ سحابي في Supabase
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                json_str = json.dumps(data)
+                cur.execute('''
+                    INSERT INTO game_data (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key)
+                    DO UPDATE SET value = EXCLUDED.value;
+                ''', (key_name, json_str))
+                conn.commit()
+        except Exception as e:
+            print(f" [!] Error saving {key_name} to Supabase: {e}")
+        finally:
+            conn.close()
+
+# دمج الدالات القديمة مع النظام الجديد
+def load_accounts():
+    return supabase_get('accounts.json', dict)
+
+def save_accounts(accounts):
+    supabase_set('accounts.json', accounts)
+
+# تعديل دالة تحميل القرى الأصلية لتقرأ من السحاب
+def sync_villages_from_supabase():
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM game_data WHERE key LIKE '%.json' AND key != 'accounts.json';")
+                rows = cur.fetchall()
+                os.makedirs('saves', exist_ok=True)
+                for row in rows:
+                    key, value = row[0], row[1]
+                    with open(f"saves/{key}", 'w') as f:
+                        f.write(value)
+            print(" [+] Synchronized all villages from Supabase to local instance.")
+        except Exception as e:
+            print(f" [!] Sync from Supabase failed: {e}")
+        finally:
+            conn.close()
+
+# مزامنة القرى قبل تشغيل السيرفر
+sync_villages_from_supabase()
 load_saved_villages()
 
-print (" [+] Loading server...")
+print(" [+] Loading server...")
 from command import command
 from engine import timestamp_now
 from version import version_name
@@ -29,31 +143,12 @@ from constants import Constant
 from quests import get_quest_map
 from bundle import ASSETS_DIR, STUB_DIR, TEMPLATES_DIR, BASE_DIR
 
-# تعديل الـ Host والـ Port ليتوافق مع Render ديناميكيًا
 host = '0.0.0.0'
 port = int(os.environ.get("PORT", 5050))
 
 app = Flask(__name__, template_folder=TEMPLATES_DIR)
 CORS(app)
-app.secret_key = 'SECRET_KEY' # تفعيل الـ Session بأمان
-
-ACCOUNTS_FILE = 'saves/accounts.json'
-
-def load_accounts():
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with open(ACCOUNTS_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_accounts(accounts):
-    os.makedirs('saves', exist_ok=True)
-    with open(ACCOUNTS_FILE, 'w') as f:
-        json.dump(accounts, f, indent=4)
-
-print (" [+] Configuring server routes...")
+app.secret_key = 'SECRET_KEY'
 
 ##########
 # ROUTES #
@@ -63,8 +158,6 @@ print (" [+] Configuring server routes...")
 def login():
     session.pop('USERID', default=None)
     session.pop('GAMEVERSION', default=None)
-    # تنبيه: تم إخفاء السطر المتسبب في خطأ الـ NoneType عند البداية لتفادي الـ Crash
-    # load_saved_villages() 
     return render_template("login.html", version=version_name, error=request.args.get('error'))
 
 @app.route("/login_process", methods=['POST'])
@@ -83,10 +176,10 @@ def login_process():
     if accounts[username]['password'] != password:
         return redirect("/?error=Wrong password!")
 
-    # ربط الحساب بالـ USERID الأصلي الذي تم إنشاؤه
     session['USERID'] = accounts[username]['userid']
     session['GAMEVERSION'] = game_version
     
+    sync_villages_from_supabase()
     load_saved_villages()
     print(f"[LOGIN SUCCESS] Player '{username}' connected as USERID: {session['USERID']}")
     return redirect("/play.html")
@@ -107,22 +200,22 @@ def signup_process():
     if username in accounts:
         return redirect("/?error=Username already taken!")
 
-    # استعمال الدالة الأصلية للسيرفر لإنشاء قرية متوافقة 100%
     try:
         native_userid = new_village()
+        user_file_name = f"{native_userid}.json"
+        user_file_path = os.path.join('saves', user_file_name)
         
-        # تعديل اسم الإمبراطورية داخل الملف الأصلي ليطابق ما اختاره اللاعب
-        user_file = os.path.join('saves', f"{native_userid}.json")
-        if os.path.exists(user_file):
-            with open(user_file, 'r') as f:
+        if os.path.exists(user_file_path):
+            with open(user_file_path, 'r') as f:
                 data = json.load(f)
             data['name'] = empire_name
-            with open(user_file, 'w') as f:
-                json.dump(data, f, indent=4)
+            
+            # حفظ القرية في الـ Supabase والـ Local مع بعضهم
+            supabase_set(user_file_name, data)
+            
     except Exception as e:
         return redirect(f"/?error=Failed to generate village: {str(e)}")
 
-    # حفظ الحساب الجديد في ملف الحسابات
     accounts[username] = {
         "password": password,
         "userid": native_userid
@@ -246,7 +339,21 @@ def command_response():
     USERID = request.values['USERID']
     data_str = request.values['data']
     data = json.loads(data_str[65:])
+    
+    # تنفيذ الأمر الأصلي في السيرفر (تحديث الداتا محلياً أولاً)
     command(USERID, data)
+    
+    # بعد تنفيذ الأمر، نقوم بحفظ الملف المحدث مباشرة إلى Supabase
+    user_file_name = f"{USERID}.json"
+    user_file_path = os.path.join('saves', user_file_name)
+    if os.path.exists(user_file_path):
+        try:
+            with open(user_file_path, 'r') as f:
+                updated_data = json.load(f)
+            supabase_set(user_file_name, updated_data)
+        except Exception as e:
+            print(f" [!] Sync save after command failed: {e}")
+            
     return ({"result": "success"}, 200)
 
 @app.route("/dynamic.flash1.dev.socialpoint.es/appsfb/socialempiresdev/srvempires/get_continent_ranking.php")
@@ -257,7 +364,7 @@ def get_continent_ranking_response():
     }
     return(response)
 
-print (" [+] Running server...")
+print(" [+] Running server...")
 
 if __name__ == '__main__':
     app.run(host=host, port=port, debug=False)
