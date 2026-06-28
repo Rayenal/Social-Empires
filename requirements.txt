@@ -1,4 +1,4 @@
 flask
 jsonpatch
 flask-cors
-psycopg2==2.9.9
+pg8000==1.31.2

@@ -1,7 +1,8 @@
 import os
 import json
 import urllib
-import psycopg2
+from urllib.parse import urlparse
+import pg8000.dbapi
 from flask import Flask, render_template, send_from_directory, request, redirect, session
 from flask_cors import CORS
 
@@ -20,13 +21,21 @@ print(" [+] Loading players...")
 from get_player_info import get_player_info, get_neighbor_info
 from sessions import load_saved_villages, all_saves_userid, all_saves_info, save_info, new_village, fb_friends_str
 
-# --- إعداد الاتصال بقاعدة بيانات SUPABASE ---
+# --- إعداد الاتصال بقاعدة بيانات SUPABASE باستعمال pg8000 ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection():
     if DATABASE_URL:
         try:
-            conn = psycopg2.connect(DATABASE_URL)
+            # تفكيك الرابط السحابي لتوافقه مع pg8000
+            url = urlparse(DATABASE_URL)
+            conn = pg8000.dbapi.connect(
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port if url.port else 5432,
+                database=url.path[1:] # حذف الفاصلة / الأولى
+            )
             return conn
         except Exception as e:
             print(f" [!] Database connection error: {e}")
