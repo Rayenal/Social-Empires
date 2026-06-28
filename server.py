@@ -1,6 +1,7 @@
 import os
 import json
-import urllib
+import urllib.request
+import urllib.error  # <-- هذا هو السطر الناقص السحري!
 from urllib.parse import urlparse
 import pg8000.dbapi
 from flask import Flask, render_template, send_from_directory, request, redirect, session
