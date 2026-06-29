@@ -11,6 +11,7 @@
             background: #669C2C url('img/Gamebar_byTrevo.png') no-repeat center center fixed;
             background-size: cover;
             display: flex;
+            flex-direction: column; /* جعل العناصر تترتب عمودياً لتوفير مساحة للإعلانات */
             justify-content: center;
             align-items: center;
             height: 100vh;
@@ -95,6 +96,15 @@
             font-size: 10pt;
             font-weight: bold;
         }
+        /* تنسيق الإعلانات لتكون تحت الـ Box وموزعة بشكل نظيف */
+        .ads-wrapper {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
     </style>
 </head>
 <body>
@@ -150,6 +160,37 @@
 
     <div style="font-size: 9pt; color: #666; margin-top: 20px;">
         By Rayen  ~ {{ version | default("?")}}
+    </div>
+</div>
+
+<!-- حاوية الإعلانات المضافة ذكياً أسفل الصندوق المحتوي على البانرات المعتمدة -->
+<div class="ads-wrapper">
+    <!-- البانر الأول 320x50 -->
+    <div>
+        <script type="text/javascript">
+            atOptions = {
+                'key' : '5ac0761c25931ab49d8e8410145ccbb3',
+                'format' : 'iframe',
+                'height' : 50,
+                'width' : 320,
+                'params' : {}
+            };
+        </script>
+        <script type="text/javascript" src="//www.highperformanceformat.com/5ac0761c25931ab49d8e8410145ccbb3/invoke.js"></script>
+    </div>
+
+    <!-- البانر الثاني 468x60 -->
+    <div>
+        <script type="text/javascript">
+            atOptions = {
+                'key' : 'eae76e453bbd1e27f8eebcb7bedcff97',
+                'format' : 'iframe',
+                'height' : 60,
+                'width' : 468,
+                'params' : {}
+            };
+        </script>
+        <script type="text/javascript" src="//www.highperformanceformat.com/eae76e453bbd1e27f8eebcb7bedcff97/invoke.js"></script>
     </div>
 </div>
 
