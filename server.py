@@ -23,9 +23,6 @@ from get_player_info import get_player_info, get_neighbor_info
 from sessions import load_saved_villages, all_saves_userid, all_saves_info, save_info, new_village, fb_friends_str
 
 # --- إعداد الاتصال بـ SUPABASE عبر REST API المباشر ---
-# مثال للروابط: 
-# SUPABASE_URL = "https://wumrgbujacdwolwuaxuu.supabase.co"
-# SUPABASE_KEY = "eyJhbGciOi..." (تلقاه في إعدادات API في Supabase باسم anon key أو service_role)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -46,7 +43,6 @@ def supabase_api_get(key_name):
     return None
 
 def supabase_api_set(key_name, data):
-    # حفظ احتياطي محلي أولاً
     os.makedirs('saves', exist_ok=True)
     local_path = f"saves/{key_name if not key_name.endswith('.json') else key_name}"
     with open(local_path, 'w') as f:
@@ -67,21 +63,17 @@ def supabase_api_set(key_name, data):
             "key": key_name,
             "value": json.dumps(data)
         }
-        # استعمال POST مع upsert أو مرونة الجدول
         res = requests.post(url, headers=headers, json=payload, timeout=5)
         if res.status_code not in [200, 201]:
-            # محاولة تحديث إذا كان السجل موجوداً والـ Prefer لم تشتغل
             url_update = f"{SUPABASE_URL}/rest/v1/game_data?key=eq.{key_name}"
             requests.patch(url_update, headers=headers, json={"value": json.dumps(data)}, timeout=5)
     except Exception as e:
         print(f" [!] Supabase API Set Error: {e}")
 
-# دمج الدالات القديمة مع النظام الجديد عبر API
 def load_accounts():
     res = supabase_api_get('accounts.json')
     if res is not None:
         return res
-    
     local_path = "saves/accounts.json"
     if os.path.exists(local_path):
         try:
@@ -115,7 +107,6 @@ def sync_villages_from_supabase():
     except Exception as e:
         print(f" [!] Sync from Supabase API failed: {e}")
 
-# مزامنة القرى قبل تشغيل السيرفر
 sync_villages_from_supabase()
 load_saved_villages()
 
@@ -133,10 +124,6 @@ port = int(os.environ.get("PORT", 5050))
 app = Flask(__name__, template_folder=TEMPLATES_DIR)
 CORS(app)
 app.secret_key = 'SECRET_KEY'
-
-##########
-# ROUTES #
-##########
 
 @app.route("/", methods=['GET'])
 def login():
@@ -203,7 +190,6 @@ def signup_process():
         "userid": native_userid
     }
     save_accounts(accounts)
-
     load_saved_villages()
     print(f"[REGISTER SUCCESS] Registered user '{username}' linked to native ID '{native_userid}'")
     return '''
@@ -219,7 +205,6 @@ def play():
         return redirect("/")
     if session['USERID'] not in all_saves_userid():
         return redirect("/")
-    
     USERID = session['USERID']
     GAMEVERSION = session['GAMEVERSION']
     return render_template("play.html", save_info=save_info(USERID), serverTime=timestamp_now(), friendsInfo=fb_friends_str(USERID), version=version_name, GAMEVERSION=GAMEVERSION, SERVERIP=host)
@@ -230,7 +215,6 @@ def ruffle():
         return redirect("/")
     if session['USERID'] not in all_saves_userid():
         return redirect("/")
-    
     USERID = session['USERID']
     GAMEVERSION = session['GAMEVERSION']
     return render_template("ruffle.html", save_info=save_info(USERID), serverTime=timestamp_now(), version=version_name, GAMEVERSION=GAMEVERSION, SERVERIP=host)
@@ -253,7 +237,6 @@ def images(path):
 def css(path):
     return send_from_directory(TEMPLATES_DIR + "/css", path)
 
-## GAME STATIC
 @app.route("/default01.static.socialpointgames.com/static/socialempires/swf/05122012_projectiles.swf")
 def similar_05122012_projectiles():
     return send_from_directory(ASSETS_DIR + "/swf", "20130417_projectiles.swf")
@@ -284,7 +267,6 @@ def static_assets_loader(path):
     else:
         return send_from_directory(ASSETS_DIR, path)
 
-## GAME DYNAMIC
 @app.route("/dynamic.flash1.dev.socialpoint.es/appsfb/socialempiresdev/srvempires/track_game_status.php", methods=['POST'])
 def track_game_status_response():
     return ("", 200)
@@ -298,7 +280,6 @@ def get_player_info_response():
     USERID = request.values['USERID']
     user = request.values['user'] if 'user' in request.values else None
     map = int(request.values['map']) if 'map' in request.values else None
-
     if user is None:
         return (get_player_info(USERID), 200)
     elif user in [Constant.NEIGHBOUR_ARTHUR_GUINEVERE_1, Constant.NEIGHBOUR_ARTHUR_GUINEVERE_2, Constant.NEIGHBOUR_ARTHUR_GUINEVERE_3]:
@@ -321,9 +302,7 @@ def command_response():
     USERID = request.values['USERID']
     data_str = request.values['data']
     data = json.loads(data_str[65:])
-    
     command(USERID, data)
-    
     user_file_name = f"{USERID}.json"
     user_file_path = os.path.join('saves', user_file_name)
     if os.path.exists(user_file_path):
@@ -333,7 +312,6 @@ def command_response():
             supabase_api_set(user_file_name, updated_data)
         except Exception as e:
             print(f" [!] Sync save after command failed: {e}")
-            
     return ({"result": "success"}, 200)
 
 @app.route("/dynamic.flash1.dev.socialpoint.es/appsfb/socialempiresdev/srvempires/get_continent_ranking.php")
@@ -345,6 +323,5 @@ def get_continent_ranking_response():
     return(response)
 
 print(" [+] Running server...")
-
 if __name__ == '__main__':
     app.run(host=host, port=port, debug=False)
