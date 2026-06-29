@@ -2,7 +2,6 @@ import os
 import json
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse
 import requests
 from flask import Flask, render_template, send_from_directory, request, redirect, session
 from flask_cors import CORS
@@ -22,56 +21,46 @@ print(" [+] Loading players...")
 from get_player_info import get_player_info, get_neighbor_info
 from sessions import load_saved_villages, all_saves_userid, all_saves_info, save_info, new_village, fb_friends_str
 
-# --- إعداد الاتصال بـ SUPABASE عبر REST API المباشر ---
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# --- إعداد الاتصال بـ FIREBASE REALTIME DATABASE ---
+FIREBASE_URL = os.environ.get("FIREBASE_URL")
 
-def supabase_api_get(key_name):
-    if not SUPABASE_URL or not SUPABASE_KEY:
+# تنظيف الرابط للتأكد من خلوه من الفواصل الزائدة
+if FIREBASE_URL and FIREBASE_URL.endswith('/'):
+    FIREBASE_URL = FIREBASE_URL[:-1]
+
+def firebase_get(key_name):
+    if not FIREBASE_URL:
         return None
     try:
-        url = f"{SUPABASE_URL}/rest/v1/game_data?key=eq.{key_name}&select=value"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        }
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200 and res.json():
-            return json.loads(res.json()[0]['value'])
+        # تحويل النقطة في اسم الملف لشرطة سفلية لأن Firebase يمنع النقاط في الـ Keys
+        safe_key = key_name.replace('.', '_')
+        url = f"{FIREBASE_URL}/game_data/{safe_key}.json"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200 and res.json() is not None:
+            return res.json()
     except Exception as e:
-        print(f" [!] Supabase API Get Error: {e}")
+        print(f" [!] Firebase Get Error: {e}")
     return None
 
-def supabase_api_set(key_name, data):
+def firebase_set(key_name, data):
+    # حفظ احتياطي محلي أولاً
     os.makedirs('saves', exist_ok=True)
     local_path = f"saves/{key_name if not key_name.endswith('.json') else key_name}"
     with open(local_path, 'w') as f:
         json.dump(data, f, indent=4)
         
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    if not FIREBASE_URL:
         return
         
     try:
-        url = f"{SUPABASE_URL}/rest/v1/game_data"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates"
-        }
-        payload = {
-            "key": key_name,
-            "value": json.dumps(data)
-        }
-        res = requests.post(url, headers=headers, json=payload, timeout=5)
-        if res.status_code not in [200, 201]:
-            url_update = f"{SUPABASE_URL}/rest/v1/game_data?key=eq.{key_name}"
-            requests.patch(url_update, headers=headers, json={"value": json.dumps(data)}, timeout=5)
+        safe_key = key_name.replace('.', '_')
+        url = f"{FIREBASE_URL}/game_data/{safe_key}.json"
+        requests.put(url, json=data, timeout=5)
     except Exception as e:
-        print(f" [!] Supabase API Set Error: {e}")
+        print(f" [!] Firebase Set Error: {e}")
 
 def load_accounts():
-    res = supabase_api_get('accounts.json')
+    res = firebase_get('accounts.json')
     if res is not None:
         return res
     local_path = "saves/accounts.json"
@@ -84,30 +73,27 @@ def load_accounts():
     return {}
 
 def save_accounts(accounts):
-    supabase_api_set('accounts.json', accounts)
+    firebase_set('accounts.json', accounts)
 
-def sync_villages_from_supabase():
-    if not SUPABASE_URL or not SUPABASE_KEY:
+def sync_villages_from_firebase():
+    if not FIREBASE_URL:
         return
     try:
-        url = f"{SUPABASE_URL}/rest/v1/game_data?select=key,value"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        }
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
+        url = f"{FIREBASE_URL}/game_data.json"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200 and res.json() is not None:
             os.makedirs('saves', exist_ok=True)
-            for item in res.json():
-                key, value = item['key'], item['value']
-                if key != 'accounts.json':
-                    with open(f"saves/{key}", 'w') as f:
-                        f.write(value)
-            print(" [+] Synchronized all villages from Supabase API.")
+            for safe_key, value in res.json().items():
+                # إرجاع الاسم الأصلي للملف (مثال: 100_json -> 100.json)
+                original_key = safe_key.replace('_json', '.json')
+                with open(f"saves/{original_key}", 'w') as f:
+                    json.dump(value, f, indent=4)
+            print(" [+] Synchronized all data from Firebase successfully.")
     except Exception as e:
-        print(f" [!] Sync from Supabase API failed: {e}")
+        print(f" [!] Sync from Firebase failed: {e}")
 
-sync_villages_from_supabase()
+# مزامنة البيانات قبل الإقلاع
+sync_villages_from_firebase()
 load_saved_villages()
 
 print(" [+] Loading server...")
@@ -150,7 +136,7 @@ def login_process():
     session['USERID'] = accounts[username]['userid']
     session['GAMEVERSION'] = game_version
     
-    sync_villages_from_supabase()
+    sync_villages_from_firebase()
     load_saved_villages()
     print(f"[LOGIN SUCCESS] Player '{username}' connected as USERID: {session['USERID']}")
     return redirect("/play.html")
@@ -180,7 +166,7 @@ def signup_process():
             with open(user_file_path, 'r') as f:
                 data = json.load(f)
             data['name'] = empire_name
-            supabase_api_set(user_file_name, data)
+            firebase_set(user_file_name, data)
             
     except Exception as e:
         return redirect(f"/?error=Failed to generate village: {str(e)}")
@@ -303,13 +289,14 @@ def command_response():
     data_str = request.values['data']
     data = json.loads(data_str[65:])
     command(USERID, data)
+    
     user_file_name = f"{USERID}.json"
     user_file_path = os.path.join('saves', user_file_name)
     if os.path.exists(user_file_path):
         try:
             with open(user_file_path, 'r') as f:
                 updated_data = json.load(f)
-            supabase_api_set(user_file_name, updated_data)
+            firebase_set(user_file_name, updated_data)
         except Exception as e:
             print(f" [!] Sync save after command failed: {e}")
     return ({"result": "success"}, 200)
