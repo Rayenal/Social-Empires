@@ -3,7 +3,7 @@ import json
 import urllib.request
 import urllib.error
 import requests
-from flask import Flask, render_template, send_from_directory, request, redirect, session
+from flask import Flask, render_template, send_from_directory, request, redirect, session, abort
 from flask_cors import CORS
 
 print(" [+] Loading basics...")
@@ -110,6 +110,50 @@ port = int(os.environ.get("PORT", 5050))
 app = Flask(__name__, template_folder=TEMPLATES_DIR)
 CORS(app)
 app.secret_key = 'SECRET_KEY'
+
+# إعداد قائمة سوداء للـ IPs المحظورة وقاموس الـ Strikes في الذاكرة
+if not hasattr(app, 'auto_banned_ips'):
+    app.auto_banned_ips = set()
+if not hasattr(app, 'bot_strikes'):
+    app.bot_strikes = {}
+
+@app.before_request
+def security_and_tracking_layer():
+    # جلب الـ IP الحقيقي للمستخدم
+    user_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if user_ip and ',' in user_ip:
+        user_ip = user_ip.split(',')[0].strip()
+        
+    # إذا كان الـ IP محظور سابقاً، اقطع عليه طول بـ 403 Forbidden
+    if user_ip in app.auto_banned_ips:
+        return abort(403)
+
+    path = request.path.lower()
+
+    # 1. صيد وتقييد الهكر اللي يلوّج على ملفات .env و تكوين السيستم
+    if ".env" in path or "flaskenv" in path or (".json" in path and "accounts" in path):
+        print(f"\n[🚨 HACKER DETECTED] IP: {user_ip} tried to scan: {request.path} | BANNED!")
+        app.auto_banned_ips.add(user_ip)
+        return abort(403)
+
+    # 2. نظام الـ 3 Strikes للبوت المڨلب متاع الدخول والتسجيل العشوائي
+    if request.path in ['/login_process', '/signup_process']:
+        username = request.form.get('username', '').strip().lower()
+        empire_name = request.form.get('empire_name', '').strip().lower()
+
+        # كشف الكلمات والأسماء المشبوهة أو الطويلة جداً
+        if len(username) > 15 or "scammer" in username or "scammer" in empire_name:
+            app.bot_strikes[user_ip] = app.bot_strikes.get(user_ip, 0) + 1
+            print(f"[⚠️ BOT STRIKE] IP: {user_ip} | Strike ({app.bot_strikes[user_ip]}/3)")
+
+            if app.bot_strikes[user_ip] >= 3:
+                print(f"[🚨 BOT BANNED] IP: {user_ip} hit 3 strikes for flooding. Banned!")
+                app.auto_banned_ips.add(user_ip)
+                return abort(403)
+                
+            return redirect("/?error=Access Denied!")
+            
+        print(f"[🕵️ TRACKING IP] Request to {request.path} from IP: {user_ip}")
 
 @app.route("/", methods=['GET'])
 def login():
